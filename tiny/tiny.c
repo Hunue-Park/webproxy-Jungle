@@ -14,8 +14,9 @@ int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
 void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
-void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
-                 char *longmsg);
+void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
+void echo(int connfd);
+void sigchld_handler(int sig);
 
 int main(int argc, char **argv) {
   int listenfd, connfd;
@@ -28,6 +29,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
     exit(1);
   }
+  // if (Signal(SIGCHLD, sigchld_handler) == SIG_ERR)
+  //   unix_error("SIGCHLD handler error");
 
   listenfd = Open_listenfd(argv[1]);
   while (1) {
@@ -37,8 +40,20 @@ int main(int argc, char **argv) {
     Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
                 0);
     printf("Accepted connection from (%s, %s)\n", hostname, port);
+    // echo(connfd);
+    // Close(connfd);  // line:netp:tiny:close
+    // connfd = Accept(listenfd, (SA *)&clientaddr,
+    //                 &clientlen);  // line:netp:tiny:accept
+    // Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
+    //             0);
+    // doit(connfd);   // line:netp:tiny:doit
+    // Close(connfd);
+    // connfd = Accept(listenfd, (SA *)&clientaddr,
+    //                 &clientlen);  // line:netp:tiny:accept
+    // Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
+    //             0);
     doit(connfd);   // line:netp:tiny:doit
-    Close(connfd);  // line:netp:tiny:close
+    Close(connfd);
   }
 }
 
@@ -55,6 +70,7 @@ void doit(int fd)
   printf("Request headrs: \n");
   printf("%s", buf);
   sscanf(buf, "%s %s %s", method, uri, version);
+  printf("ROHA! - URI : %s\n", uri);
   if (strcasecmp(method, "GET")) {
     clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
     return;
@@ -138,8 +154,9 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
 
 void serve_static(int fd, char *filename, int filesize)
 {
+
   int srcfd;
-  char *srcp, filetype[MAXLINE], buf[MAXBUF];
+  char *srcp, filetype[MAXLINE], buf[MAXBUF], *fbuf;
 
   get_filetype(filename, filetype);
   sprintf(buf, "HTTP/1.0 200 OK\r\n");
@@ -151,11 +168,17 @@ void serve_static(int fd, char *filename, int filesize)
   printf("Response headers: \n") ;
   printf("%s", buf);
 
-  srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  srcfd = Open(filename, O_RDONLY);
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  // Close(srcfd);
+  // Rio_writen(fd, srcp, filesize);
+  // Munmap(srcp, filesize);
+  fbuf = malloc(filesize);
+  Rio_readn(srcfd, fbuf, filesize);
   Close(srcfd);
-  Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
+  Rio_writen(fd, fbuf, filesize);
+  free(fbuf);
+
 }
 
 void get_filetype(char *filename, char *filetype)
@@ -168,6 +191,8 @@ void get_filetype(char *filename, char *filetype)
     strcpy(filetype, "image/png");
   else if (strstr(filename, ".jpg"))
     strcpy(filetype, "image/jpeg");
+  else if (strstr(filename, ".mp4"))
+    strcpy(filetype, "video/mp4");
   else  
     strcpy(filetype, "text/plain");
 }
@@ -187,4 +212,33 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     Execve(filename, emptylist, environ); // Run CGI program
   }
   Wait(NULL);
+}
+
+void echo(int connfd){
+    size_t n;
+    char buf[MAXLINE];
+    rio_t rio;
+
+    Rio_readinitb(&rio, connfd);
+    while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0){
+        if(strcmp(buf, "\r\n") == 0)
+            break;
+        printf("server received %d bytes\n", (int)n);
+        Rio_writen(connfd, buf, n);
+    }
+}
+
+/*
+ * sigchld_handler - reaps CGI children
+ */
+void sigchld_handler(int sig)
+{
+    int olderrno = errno;
+
+    while (waitpid(-1, NULL, 0) > 0) {
+        Sio_puts("Handler reaped child\n");
+    }
+    if (errno != ECHILD)
+        Sio_error("waitpid error");
+    errno = olderrno;
 }
